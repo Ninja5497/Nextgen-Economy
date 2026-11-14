@@ -86,20 +86,26 @@ CAT_KW = {
   "Sharemarket": ["stock", "shares", "share market", "nasdaq", r"s&p 500", "dow jones", "equity", "equities", r"\bipo\b",
                   "dividend", "bull market", "bear market", r"\betf\b", "wall street", "index fund", "earnings",
                   "crypto", "bitcoin", "ethereum", "hedge fund", "futures", "treasury yield", "rally", "sell-off",
-                  "market", "investor"],
+                  "stock market", "share market", "markets"],
   "Technology": ["technology", "tech ", "software", "hardware", "cloud", "cybersecurity", "cyber", "5g", "startup",
                  "silicon valley", "semiconductor", r"\bchip", "quantum", "blockchain", "apple", "google", "microsoft",
-                 "meta ", "amazon", "tesla", "smartphone", "app ", "data center", "satellite", "spacex"],
+                 "meta platforms", "amazon", "tesla", "smartphone", "data center", "satellite", "spacex"],
 }
 CAT_RE = {c: re.compile("|".join(k if k.startswith(r"\b") or "\\" in k else re.escape(k) for k in kws), re.I)
           for c, kws in CAT_KW.items()}
 ORDER = ["AI", "Health", "Education", "Sharemarket", "Technology"]
 
+JUNK_RE = re.compile(r"wordle|connections hints|strands hints|horoscope|crossword|sudoku|powerball|mega millions|"
+                     r"about dow jones|print edition|the daily briefing|podcast|quiz\b", re.I)
+EDITION_RE = re.compile(r"\|\s*[A-Z][a-z]+ \d{1,2}(st|nd|rd|th) \d{4}\s*$")
+def is_junk(title):
+    return bool(JUNK_RE.search(title) or EDITION_RE.search(title))
+
 def classify(text, hint=None):
     for c in ORDER:
         if CAT_RE[c].search(text):
             return c
-    return hint if hint in CAT_QUERY else "Business"
+    return "Business"   # no clear topic keywords -> general economy/business
 
 def http_get(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml, text/xml, */*"})
@@ -166,7 +172,7 @@ def parse_feed(data, source_key, hint=None, google=False):
         raw = child_text(it, "description", "summary", "encoded", "content")
         desc = "" if google else strip_html(raw)[:260]
         pub = child_text(it, "pubDate", "published", "updated", "date")
-        if not title or not link:
+        if not title or not link or is_junk(title):
             continue
         date = parse_date(pub)
         uid = "n_" + hashlib.sha1((re.sub(r"\W+", "", title.lower())[:90]).encode()).hexdigest()[:16]
@@ -222,6 +228,15 @@ def main():
     if not new and prev:
         print("nothing fetched; keeping existing file"); return
 
+    cleaned = []
+    for i in prev:
+        if is_junk(i.get("title", "")):
+            continue
+        txt = i.get("title", "") + " " + i.get("description", "")
+        i["category"] = classify(txt)
+        i["next"] = bool(NEXT_RE.search(txt))
+        cleaned.append(i)
+    prev = cleaned
     merged = {}
     for i in prev + new:                      # new overwrites old (fresher image/category)
         merged[i["uid"]] = i
@@ -237,8 +252,8 @@ def main():
         kept.append(i)
         if len(kept) >= MAX_TOTAL: break
 
-    old_ids = [i["uid"] for i in prev]
-    if [i["uid"] for i in kept] == old_ids:
+    old_ids = [(i["uid"], i["category"]) for i in prev]
+    if [(i["uid"], i["category"]) for i in kept] == old_ids:
         print("no changes"); return
     json.dump({"updated": datetime.now(timezone.utc).isoformat(), "count": len(kept), "items": kept},
               open(OUT, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
